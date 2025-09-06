@@ -1,134 +1,94 @@
+import cv2
 import streamlit as st
 from ultralytics import YOLO
-import cv2
 import numpy as np
-import sounddevice as sd
-import threading
-import queue
-from PIL import Image
+import time
 
-st.set_page_config(page_title="TrafficOps+ Live Dashboard", layout="wide")
-st.title("🚦 TrafficOps+ Live Traffic Dashboard (Refined)")
+# Load YOLOv8 model (replace with your trained model if available)
+MODEL_PATH = "yolov8s.pt"
+model = YOLO(MODEL_PATH)
 
-# -------------------- Global flags --------------------
-siren_detected = False
-ped_count = 0
-non_motor_count = 0
-emergency_count = 0
-q_audio = queue.Queue()
-running = False
-# ------------------------------------------------------
+# Categories we care about
+TARGET_CLASSES = {
+    "person": "Pedestrian",
+    "bicycle": "Non-motorized",
+    "motorcycle": "Non-motorized",
+    "ambulance": "Emergency",
+    "fire_truck": "Emergency"  # If using custom dataset with these labels
+}
 
-# -------------------- Audio thread --------------------
-def listen_siren():
-    global siren_detected, running
-    fs = 44100
-    duration = 1
+# Fallback mapping for COCO dataset (ambulance/fire_truck are not native)
+EMERGENCY_CLASSES = ["truck", "bus"]  # heuristic for now
 
-    def detect_siren(audio_chunk):
-        fft = np.fft.fft(audio_chunk)
-        freqs = np.fft.fftfreq(len(fft), 1/fs)
-        magnitude = np.abs(fft)
-        siren_range = (freqs > 500) & (freqs < 2000)
-        siren_energy = magnitude[siren_range].sum()
-        return siren_energy > 120000  # Adjusted threshold
+# Streamlit dashboard
+st.title("🚦 TrafficOps+ Live Dashboard")
+stframe = st.empty()
+status_placeholder = st.empty()
 
-    while running:
-        audio = sd.rec(int(duration*fs), samplerate=fs, channels=1, dtype='float32')
-        sd.wait()
-        audio = audio.flatten()
-        siren_detected = detect_siren(audio)
-# ------------------------------------------------------
+# Metrics
+pedestrian_count = st.metric("👥 Pedestrians", 0)
+non_motor_count = st.metric("🚲 Non-Motorized Vehicles", 0)
+emergency_count = st.metric("🚑 Emergency Vehicles", 0)
 
-# -------------------- YOLO Setup --------------------
-model = YOLO("yolov8s.pt")
-cap = None
+cap = cv2.VideoCapture(0)  # 0 = default camera
 
-def detect_frame(frame):
-    global ped_count, non_motor_count, emergency_count
-    results = model(frame)
-    annotated_frame = results[0].plot()
-    boxes = results[0].boxes
+if not cap.isOpened():
+    st.error("❌ Camera not accessible")
+else:
+    st.success("✅ Camera started... press 'Stop' button to end")
 
-    for box, cls in zip(boxes.xyxy, boxes.cls.cpu().numpy()):
-        x1, y1, x2, y2 = map(int, box)
-        label = results[0].names[int(cls)]
+stop_btn = st.button("Stop Camera")
 
-        if label == "person":
-            ped_count += 1
-            cv2.putText(annotated_frame, "Pedestrian", (x1, y1-10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
-        elif label in ["bicycle", "motorcycle"]:
-            non_motor_count += 1
-            cv2.putText(annotated_frame, "Non-motorized", (x1, y1-10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,0), 2)
-        elif label in ["car", "bus", "truck"]:
-            vehicle_roi = frame[y1:y2, x1:x2]
-            # Only top 30% for siren light detection
-            vehicle_top_roi = vehicle_roi[0:int(0.3*vehicle_roi.shape[0]), :]
-            hsv = cv2.cvtColor(vehicle_top_roi, cv2.COLOR_BGR2HSV)
-            lower_red1 = np.array([0,120,70])
-            upper_red1 = np.array([10,255,255])
-            lower_red2 = np.array([170,120,70])
-            upper_red2 = np.array([180,255,255])
-            lower_blue = np.array([100,150,0])
-            upper_blue = np.array([140,255,255])
-            mask_red = cv2.inRange(hsv, lower_red1, upper_red1) + cv2.inRange(hsv, lower_red2, upper_red2)
-            mask_blue = cv2.inRange(hsv, lower_blue, upper_blue)
-            red_pixels = cv2.countNonZero(mask_red)
-            blue_pixels = cv2.countNonZero(mask_blue)
-            lights_detected = red_pixels > 300 or blue_pixels > 300
-
-            # Combined logic for emergency
-            if lights_detected or siren_detected:
-                emergency_count += 1
-                cv2.putText(annotated_frame, "Emergency Vehicle", (x1, y1-10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
-
-    return annotated_frame
-
-# -------------------- Streamlit Interface --------------------
-start_btn = st.button("Start Detection")
-stop_btn = st.button("Stop Detection")
-
-frame_placeholder = st.empty()
-col1, col2, col3 = st.columns(3)
-ped_metric = col1.metric("🚶 Pedestrians", 0)
-non_motor_metric = col2.metric("🚲 Non-motorized Vehicles", 0)
-emergency_metric = col3.metric("🚑 Emergency Vehicles", 0)
-
-if start_btn and not running:
-    running = True
-    ped_count = 0
-    non_motor_count = 0
-    emergency_count = 0
-    cap = cv2.VideoCapture(0)
-
-    # Start audio thread
-    audio_thread = threading.Thread(target=listen_siren, daemon=True)
-    audio_thread.start()
-
-while running:
+while cap.isOpened() and not stop_btn:
     ret, frame = cap.read()
     if not ret:
-        st.warning("Cannot open camera.")
+        st.warning("⚠️ Stream ended or cannot fetch frame.")
         break
 
-    frame = detect_frame(frame)
+    # Run detection
+    results = model(frame, verbose=False)
 
-    # Convert to RGB for Streamlit
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    frame_placeholder.image(frame_rgb, channels="RGB")
+    # Counts
+    ped_count = 0
+    nmv_count = 0
+    emg_count = 0
+
+    # Process detections
+    for r in results:
+        for box in r.boxes:
+            cls_id = int(box.cls[0])
+            label = model.names[cls_id]
+            conf = float(box.conf[0])
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+
+            if label == "person":
+                ped_count += 1
+                color = (0, 255, 0)
+                cv2.putText(frame, "Pedestrian", (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+
+            elif label in ["bicycle", "motorcycle"]:
+                nmv_count += 1
+                color = (255, 255, 0)
+                cv2.putText(frame, "Non-Motorized", (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+
+            elif label in EMERGENCY_CLASSES:
+                emg_count += 1
+                color = (0, 0, 255)
+                cv2.putText(frame, "Emergency", (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
     # Update metrics
-    ped_metric.metric("🚶 Pedestrians", ped_count)
-    non_motor_metric.metric("🚲 Non-motorized Vehicles", non_motor_count)
-    emergency_metric.metric("🚑 Emergency Vehicles", emergency_count)
+    pedestrian_count.metric("👥 Pedestrians", ped_count)
+    non_motor_count.metric("🚲 Non-Motorized Vehicles", nmv_count)
+    emergency_count.metric("🚑 Emergency Vehicles", emg_count)
 
-    if stop_btn:
-        running = False
-        break
+    # Show frame
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    stframe.image(frame, channels="RGB")
 
-if cap:
-    cap.release()
-cv2.destroyAllWindows()
+cap.release()
