@@ -5,6 +5,7 @@ from ultralytics import YOLO
 from sort import Sort  # Make sure sort.py is in same folder
 import sounddevice as sd
 from scipy.fft import fft
+import time
 
 # ----------------------
 # 1. Model & Tracker
@@ -25,7 +26,11 @@ status_placeholder = st.empty()
 ped_metric = st.metric("👥 Pedestrians", 0)
 nmv_metric = st.metric("🚲 Non-Motorized Vehicles", 0)
 emg_metric = st.metric("🚑 Emergency Vehicles", 0)
+pollution_metric = st.metric("🏭 Pollution Index", 0)
+emissions_metric = st.metric("📉 Emissions Reduced (%)", 0)
 lane_indicator = st.empty()  # Traffic light indicator
+virtual_traffic_light = st.empty()
+map_placeholder = st.empty()
 
 # ----------------------
 # 3. Camera Capture
@@ -58,6 +63,9 @@ def detect_siren(duration=1, fs=44100):
 # ----------------------
 # 5. Main Loop
 # ----------------------
+total_congestion_score = 0
+start_time = time.time()
+
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
@@ -115,16 +123,64 @@ while cap.isOpened():
                         emergency_detected = True
                     cv2.rectangle(frame, (x1,y1), (x2,y2), color, 2)
 
-    # Siren detection (run in parallel if needed, simplified here)
+    # ----------------------
+    # 6. Environmental & Congestion Analysis
+    # ----------------------
+    # Define a simple "congestion score" based on vehicle count
+    vehicle_count = nmv_count + emg_count  # You can refine this
+    congestion_score = vehicle_count * 0.5  # A simple multiplier
+    total_congestion_score += congestion_score
+
+    # Calculate average pollution index (a simple simulation)
+    current_pollution_index = min(100, congestion_score * 5)
+    pollution_metric.metric("🏭 Pollution Index", f"{current_pollution_index:.1f}")
+
+    # Calculate emissions reduction
+    elapsed_time = time.time() - start_time
+    if elapsed_time > 0:
+        emissions_reduced = (total_congestion_score / elapsed_time) * 0.1
+        emissions_metric.metric("📉 Emissions Reduced (%)", f"{emissions_reduced:.1f}")
+
+    if current_pollution_index > 50 and emg_count == 0:
+        status_placeholder.warning("⚠️ HIGH POLLUTION: Recommend short-cycle adjustments to cut idling.")
+
+    # ----------------------
+    # 7. Pedestrian Crossing & Augmented Bubble Space
+    # ----------------------
+    # Pedestrian Surge Logic
+    if ped_count > 5: # Threshold for a "pedestrian surge"
+        status_placeholder.info("🚶‍♂️ Pedestrian surge → trigger crosswalk phase.")
+        overlay = frame.copy()
+        cv2.circle(overlay, (frame.shape[1] // 2, frame.shape[0] // 2), 100, (0, 255, 0), -1)
+        alpha = 0.3
+        frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+    
+    # ----------------------
+    # 8. Virtual Traffic Light
+    # ----------------------
     siren_flag = detect_siren(duration=0.5)
     if emergency_detected and siren_flag:
         lane_indicator.success("🚦 GREEN LIGHT: Emergency Vehicle Detected!")
         cv2.putText(frame, "EMERGENCY GREEN LIGHT", (50,50),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 3)
+        virtual_traffic_light.success("🟢 GREEN LIGHT FOR EMERGENCY PATH")
     elif emergency_detected:
         lane_indicator.warning("🚦 Emergency Vehicle detected visually, siren not confirmed")
+    elif ped_count > 5:
+        lane_indicator.info("🚶‍♂️ Pedestrian surge → trigger crosswalk phase.")
+        virtual_traffic_light.info("🚶‍♂️ PEDESTRIAN CROSSING PHASE")
     else:
         lane_indicator.info("🚦 Normal Traffic")
+        virtual_traffic_light.info("🔴 NORMAL TRAFFIC FLOW")
+
+    # ----------------------
+    # 9. Simulated Google Maps Integration
+    # ----------------------
+    map_data = {
+        'lat': [12.9716], # Example coordinates for a city
+        'lon': [77.5946]
+    }
+    map_placeholder.map(map_data, zoom=12)
 
     # Update metrics
     ped_metric.metric("👥 Pedestrians", ped_count)
