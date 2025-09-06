@@ -8,16 +8,18 @@ import queue
 from PIL import Image
 
 st.set_page_config(page_title="TrafficOps+ Live Dashboard", layout="wide")
-st.title("🚦 TrafficOps+ Live Traffic Dashboard")
+st.title("🚦 TrafficOps+ Live Traffic Dashboard (Refined)")
 
-
+# -------------------- Global flags --------------------
 siren_detected = False
 ped_count = 0
 non_motor_count = 0
 emergency_count = 0
 q_audio = queue.Queue()
 running = False
+# ------------------------------------------------------
 
+# -------------------- Audio thread --------------------
 def listen_siren():
     global siren_detected, running
     fs = 44100
@@ -29,16 +31,16 @@ def listen_siren():
         magnitude = np.abs(fft)
         siren_range = (freqs > 500) & (freqs < 2000)
         siren_energy = magnitude[siren_range].sum()
-        return siren_energy > 100000
+        return siren_energy > 120000  # Adjusted threshold
 
     while running:
         audio = sd.rec(int(duration*fs), samplerate=fs, channels=1, dtype='float32')
         sd.wait()
         audio = audio.flatten()
         siren_detected = detect_siren(audio)
+# ------------------------------------------------------
 
-
-
+# -------------------- YOLO Setup --------------------
 model = YOLO("yolov8s.pt")
 cap = None
 
@@ -62,14 +64,22 @@ def detect_frame(frame):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,0), 2)
         elif label in ["car", "bus", "truck"]:
             vehicle_roi = frame[y1:y2, x1:x2]
-            hsv = cv2.cvtColor(vehicle_roi, cv2.COLOR_BGR2HSV)
-            mask_red = cv2.inRange(hsv, np.array([0,120,70]), np.array([10,255,255])) + \
-                       cv2.inRange(hsv, np.array([170,120,70]), np.array([180,255,255]))
-            mask_blue = cv2.inRange(hsv, np.array([100,150,0]), np.array([140,255,255]))
+            # Only top 30% for siren light detection
+            vehicle_top_roi = vehicle_roi[0:int(0.3*vehicle_roi.shape[0]), :]
+            hsv = cv2.cvtColor(vehicle_top_roi, cv2.COLOR_BGR2HSV)
+            lower_red1 = np.array([0,120,70])
+            upper_red1 = np.array([10,255,255])
+            lower_red2 = np.array([170,120,70])
+            upper_red2 = np.array([180,255,255])
+            lower_blue = np.array([100,150,0])
+            upper_blue = np.array([140,255,255])
+            mask_red = cv2.inRange(hsv, lower_red1, upper_red1) + cv2.inRange(hsv, lower_red2, upper_red2)
+            mask_blue = cv2.inRange(hsv, lower_blue, upper_blue)
             red_pixels = cv2.countNonZero(mask_red)
             blue_pixels = cv2.countNonZero(mask_blue)
-            lights_detected = red_pixels>50 or blue_pixels>50
+            lights_detected = red_pixels > 300 or blue_pixels > 300
 
+            # Combined logic for emergency
             if lights_detected or siren_detected:
                 emergency_count += 1
                 cv2.putText(annotated_frame, "Emergency Vehicle", (x1, y1-10),
@@ -77,7 +87,7 @@ def detect_frame(frame):
 
     return annotated_frame
 
-
+# -------------------- Streamlit Interface --------------------
 start_btn = st.button("Start Detection")
 stop_btn = st.button("Stop Detection")
 
@@ -94,7 +104,7 @@ if start_btn and not running:
     emergency_count = 0
     cap = cv2.VideoCapture(0)
 
-    
+    # Start audio thread
     audio_thread = threading.Thread(target=listen_siren, daemon=True)
     audio_thread.start()
 
@@ -106,11 +116,11 @@ while running:
 
     frame = detect_frame(frame)
 
-    
+    # Convert to RGB for Streamlit
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     frame_placeholder.image(frame_rgb, channels="RGB")
 
-
+    # Update metrics
     ped_metric.metric("🚶 Pedestrians", ped_count)
     non_motor_metric.metric("🚲 Non-motorized Vehicles", non_motor_count)
     emergency_metric.metric("🚑 Emergency Vehicles", emergency_count)
