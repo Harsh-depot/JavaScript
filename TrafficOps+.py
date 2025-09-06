@@ -13,6 +13,24 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import pandas as pd
+try:
+    import librosa
+    import soundfile as sf
+    from scipy import signal
+    from scipy.fft import fft, fftfreq
+    AUDIO_ANALYSIS_AVAILABLE = True
+except ImportError:
+    print("Audio analysis libraries not available. Install with: pip install librosa soundfile scipy")
+    AUDIO_ANALYSIS_AVAILABLE = False
+    # Create dummy functions
+    def librosa_load(*args, **kwargs):
+        return None, None
+    def fft(*args, **kwargs):
+        return None
+    def fftfreq(*args, **kwargs):
+        return None
+
+import re
 
 # ---------------------
 # CONFIG
@@ -59,6 +77,8 @@ pedestrian_waiting = False
 emergency_detected = False
 congestion_level = 0
 lane_allocations = {"lane1": "normal", "lane2": "normal", "lane3": "normal"}
+audio_siren_detected = False
+emergency_vehicle_types = {"ambulance": 0, "fire_truck": 0, "police": 0, "emergency": 0}
 
 # ---------------------
 # UTILITY FUNCTIONS
@@ -91,16 +111,63 @@ def suggest_emergency_route(emergency_zone):
     """Suggest optimal route for emergency vehicles"""
     return f"Emergency route to {emergency_zone} - All lanes cleared"
 
-def detect_ambulance_simple(frame, x1, y1, x2, y2):
-    """Simplified but effective ambulance detection"""
+def detect_siren_lights(frame, x1, y1, x2, y2):
+    """Detect red and blue siren lights on the TOP of vehicles - simple percentage-based approach"""
     roi = frame[int(y1):int(y2), int(x1):int(x2)]
     if roi.size == 0:
-        return False
+        return False, False
     
+    # Focus on the TOP 25% of the vehicle where siren lights are located
+    top_roi_height = int(roi.shape[0] * 0.25)  # Top 25% of vehicle
+    top_roi = roi[0:top_roi_height, :]  # Only analyze top portion
+    
+    if top_roi.size == 0:
+        return False, False
+    
+    # Convert to HSV for better color detection
+    hsv = cv2.cvtColor(top_roi, cv2.COLOR_BGR2HSV)
+    
+    # Red color detection - broader range for daylight conditions
+    red_lower1 = np.array([0, 50, 50])    # Lower thresholds for daylight
+    red_upper1 = np.array([10, 255, 255])
+    red_lower2 = np.array([170, 50, 50])
+    red_upper2 = np.array([180, 255, 255])
+    
+    red_mask1 = cv2.inRange(hsv, red_lower1, red_upper1)
+    red_mask2 = cv2.inRange(hsv, red_lower2, red_upper2)
+    red_mask = red_mask1 + red_mask2
+    
+    # Blue color detection - broader range for daylight conditions
+    blue_lower = np.array([100, 50, 50])  # Lower thresholds for daylight
+    blue_upper = np.array([130, 255, 255])
+    blue_mask = cv2.inRange(hsv, blue_lower, blue_upper)
+    
+    # Calculate color percentages in the top portion
+    red_pixels = cv2.countNonZero(red_mask)
+    blue_pixels = cv2.countNonZero(blue_mask)
+    total_pixels = top_roi.shape[0] * top_roi.shape[1]
+    
+    red_percentage = red_pixels / total_pixels
+    blue_percentage = blue_pixels / total_pixels
+    combined_percentage = red_percentage + blue_percentage
+    
+    # Simple threshold: if top 25% has 20-30% red and blue pixels, it's likely a siren
+    red_siren = red_percentage >= 0.20  # 20% red threshold
+    blue_siren = blue_percentage >= 0.20  # 20% blue threshold
+    
+    # Combined threshold: total red+blue should be 20-30%
+    is_emergency_colors = 0.20 <= combined_percentage <= 0.30
+    
+    print(f"Top region analysis: red={red_percentage:.2f}, blue={blue_percentage:.2f}, combined={combined_percentage:.2f}, emergency_colors={is_emergency_colors}")
+    
+    return red_siren or is_emergency_colors, blue_siren or is_emergency_colors
+
+def detect_ambulance_text(roi):
+    """Detect red 'AMBULANCE' text on the vehicle"""
     # Convert to HSV for better color detection
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     
-    # Red color detection (ambulances are usually red/white)
+    # Red color detection for "AMBULANCE" text
     red_lower1 = np.array([0, 50, 50])
     red_upper1 = np.array([10, 255, 255])
     red_lower2 = np.array([170, 50, 50])
@@ -110,26 +177,160 @@ def detect_ambulance_simple(frame, x1, y1, x2, y2):
     red_mask2 = cv2.inRange(hsv, red_lower2, red_upper2)
     red_mask = red_mask1 + red_mask2
     
-    # White color detection (ambulances have white parts)
-    white_lower = np.array([0, 0, 200])
-    white_upper = np.array([180, 30, 255])
-    white_mask = cv2.inRange(hsv, white_lower, white_upper)
+    # Find contours in the red mask
+    contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    # Calculate color percentages
-    red_pixels = cv2.countNonZero(red_mask)
-    white_pixels = cv2.countNonZero(white_mask)
-    total_pixels = roi.shape[0] * roi.shape[1]
+    # Look for text-like rectangular regions in red
+    text_regions = []
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        aspect_ratio = w / h if h > 0 else 0
+        area = cv2.contourArea(contour)
+        
+        # Look for horizontal text regions (AMBULANCE is written horizontally)
+        if (3 < aspect_ratio < 15 and  # Wide aspect ratio for text
+            w > 40 and h > 10 and      # Minimum size for readable text
+            area > 300):               # Minimum area
+            text_regions.append((x, y, w, h))
     
-    red_percentage = red_pixels / total_pixels
-    white_percentage = white_pixels / total_pixels
+    # If we find multiple horizontal red regions, likely "AMBULANCE" text
+    return len(text_regions) >= 1  # Lowered threshold since we're looking for red text specifically
+
+def detect_star_of_life(roi):
+    """Detect Star of Life symbol with stricter criteria"""
+    # Convert to grayscale
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     
-    # Ambulance detection: red + white combination
-    if red_percentage > 0.1 and white_percentage > 0.1:
-        return True
-    elif red_percentage > 0.2:  # High red percentage
-        return True
+    # Apply edge detection
+    edges = cv2.Canny(gray, 50, 150)
+    
+    # Find contours
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Look for star-like shapes with stricter criteria
+    for contour in contours:
+        approx = cv2.approxPolyDP(contour, 0.02 * cv2.arcLength(contour, True), True)
+        area = cv2.contourArea(contour)
+        perimeter = cv2.arcLength(contour, True)
+        
+        # Stricter criteria for Star of Life
+        if (len(approx) >= 6 and  # Star of Life has 6 points
+            area > 300 and         # Larger minimum area
+            perimeter > 50 and     # Minimum perimeter
+            area / (perimeter * perimeter) > 0.1):  # Compactness check
+            return True
     
     return False
+
+def detect_emergency_vehicle_advanced(frame, x1, y1, x2, y2, vehicle_type="truck"):
+    """Enhanced emergency vehicle detection: siren lights + red AMBULANCE text"""
+    roi = frame[int(y1):int(y2), int(x1):int(x2)]
+    if roi.size == 0:
+        return False, "unknown"
+    
+    # 1. Siren light detection in top portion
+    red_siren, blue_siren = detect_siren_lights(frame, x1, y1, x2, y2)
+    
+    # 2. Red "AMBULANCE" text detection throughout the vehicle
+    has_ambulance_text = detect_ambulance_text(roi)
+    
+    # 3. Decision logic
+    if red_siren or blue_siren:
+        # Determine vehicle type based on siren colors
+        if red_siren and blue_siren:
+            vehicle_class = "ambulance"  # Both red and blue = ambulance
+        elif red_siren:
+            vehicle_class = "fire_truck"  # Only red = fire truck
+        elif blue_siren:
+            vehicle_class = "police"  # Only blue = police
+        else:
+            vehicle_class = "emergency"  # Fallback
+        
+        print(f"Emergency vehicle detected: {vehicle_class} (red_siren={red_siren}, blue_siren={blue_siren}, ambulance_text={has_ambulance_text})")
+        return True, vehicle_class
+    
+    # 4. Check for red "AMBULANCE" text even without siren lights
+    elif has_ambulance_text:
+        print(f"Ambulance detected by text: AMBULANCE text found")
+        return True, "ambulance"
+    
+    # 5. No emergency indicators = regular vehicle
+    return False, "regular"
+
+def extract_audio_from_video(video_source, duration=1.0):
+    """Extract audio from video source for siren detection"""
+    if not AUDIO_ANALYSIS_AVAILABLE:
+        print("Audio analysis not available - install required libraries")
+        return None
+        
+    try:
+        # For camera input, we can't easily extract audio
+        if isinstance(video_source, int):
+            print("Camera input detected - audio analysis disabled")
+            return None
+        
+        # For video files, try to extract audio
+        if isinstance(video_source, str):
+            # Check if it's a local file
+            if video_source.endswith(('.mp4', '.avi', '.mov', '.mkv', '.mpg', '.mpeg', '.wmv', '.flv')):
+                try:
+                    print(f"Attempting to extract audio from: {video_source}")
+                    # Use librosa to load audio
+                    audio_data, sample_rate = librosa.load(video_source, duration=duration, sr=22050)
+                    print(f"Audio extracted successfully - {len(audio_data)} samples at {sample_rate}Hz")
+                    return audio_data, sample_rate
+                except Exception as e:
+                    print(f"Failed to extract audio from video file: {e}")
+                    return None
+            # Check if it's a URL (YouTube, etc.)
+            elif video_source.startswith(('http://', 'https://')):
+                print("URL detected - audio analysis disabled for streaming sources")
+                return None
+            else:
+                print(f"Unknown file type: {video_source}")
+                return None
+        
+        print(f"Unsupported video source type: {type(video_source)}")
+        return None
+    except Exception as e:
+        print(f"Audio extraction error: {e}")
+        return None
+
+def analyze_audio_for_siren(audio_data, sample_rate=22050):
+    """Analyze audio data for siren sounds"""
+    if not AUDIO_ANALYSIS_AVAILABLE:
+        return False
+        
+    if audio_data is None or len(audio_data) == 0:
+        return False
+    
+    try:
+        # Convert to numpy array if needed
+        if hasattr(audio_data, 'numpy'):
+            audio_data = audio_data.numpy()
+        
+        # Ensure we have audio data
+        if len(audio_data.shape) > 1:
+            audio_data = np.mean(audio_data, axis=1)
+        
+        # Apply FFT to get frequency spectrum
+        fft_data = fft(audio_data)
+        freqs = fftfreq(len(audio_data), 1/sample_rate)
+        
+        # Siren frequencies typically range from 200-2000 Hz
+        siren_freq_range = (freqs >= 200) & (freqs <= 2000)
+        siren_power = np.sum(np.abs(fft_data[siren_freq_range])**2)
+        total_power = np.sum(np.abs(fft_data)**2)
+        
+        # Calculate siren power ratio
+        siren_ratio = siren_power / total_power if total_power > 0 else 0
+        
+        # Detect siren based on power in siren frequency range
+        return siren_ratio > 0.1  # 10% threshold
+        
+    except Exception as e:
+        print(f"Audio analysis error: {e}")
+        return False
 
 def draw_traffic_light(frame, state, position=(50, 50)):
     """Draw virtual traffic light on frame"""
@@ -211,6 +412,7 @@ def get_video_source(input_type, file_path=None, yt_url=None):
 def run_detection(video_source):
     global running, latest_frame, vehicle_count, pedestrian_count, emergency_count, hotspot_zone, aqi_level
     global traffic_light_state, pedestrian_waiting, emergency_detected, congestion_level, lane_allocations
+    global audio_siren_detected, emergency_vehicle_types
 
     cap = cv2.VideoCapture(video_source)
 
@@ -218,6 +420,15 @@ def run_detection(video_source):
         st.error("⚠️ Cannot open video source.")
         running = False
         return
+
+    # Try to extract audio for siren detection
+    audio_result = extract_audio_from_video(video_source)
+    if audio_result is not None:
+        audio_data, sample_rate = audio_result
+        audio_analysis_enabled = True
+    else:
+        audio_data, sample_rate = None, None
+        audio_analysis_enabled = False
 
     while running:
         ret, frame = cap.read()
@@ -235,6 +446,18 @@ def run_detection(video_source):
         aqi_level = 0
         pedestrian_waiting = False
         emergency_detected = False
+        
+        # Reset emergency vehicle type counts
+        emergency_vehicle_types = {"ambulance": 0, "fire_truck": 0, "police": 0, "emergency": 0}
+        
+        # Audio analysis for siren detection (every 30 frames to avoid performance issues)
+        if audio_analysis_enabled and audio_data is not None and cap.get(cv2.CAP_PROP_POS_FRAMES) % 30 == 0:
+            try:
+                audio_siren_detected = analyze_audio_for_siren(audio_data, sample_rate)
+            except:
+                audio_siren_detected = False
+        else:
+            audio_siren_detected = False
 
         for r in results:
             boxes = r.boxes.xyxy.cpu().numpy()
@@ -249,20 +472,70 @@ def run_detection(video_source):
                 if label in ["car", "bus", "truck", "motorbike", "bicycle"]:
                     vehicle_count += 1
                     
-                    # Check for ambulance using simplified detection
-                    if detect_ambulance_simple(frame, x1, y1, x2, y2):
+                    # Advanced emergency vehicle detection
+                    is_emergency, vehicle_class = detect_emergency_vehicle_advanced(frame, x1, y1, x2, y2, label)
+                    
+                    if is_emergency:
                         emergency_count += 1
                         emergency_detected = True
+                        emergency_vehicle_types[vehicle_class] += 1
+                        
+                        # Determine vehicle-specific styling and emoji
+                        if vehicle_class == "ambulance":
+                            emoji = "🚑"
+                            color = (0, 0, 255)  # Red
+                            text_color = (0, 0, 255)
+                        elif vehicle_class == "fire_truck":
+                            emoji = "🚒"
+                            color = (0, 0, 255)  # Red
+                            text_color = (0, 0, 255)
+                        elif vehicle_class == "police":
+                            emoji = "🚔"
+                            color = (255, 0, 0)  # Blue
+                            text_color = (255, 0, 0)
+                        else:
+                            emoji = "🚨"
+                            color = (0, 255, 255)  # Yellow
+                            text_color = (0, 255, 255)
                         
                         # Draw emergency vehicle with special styling
-                        color = (0, 0, 255)  # Red for emergency vehicles
                         cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 4)
-                        cv2.putText(frame, f"🚑 AMBULANCE {conf:.2f}",
-                                    (int(x1), int(y1) - 10),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
                         
-                        # Draw flashing effect
-                        cv2.circle(frame, (int((x1+x2)/2), int((y1+y2)/2)), 25, color, 3)
+                        # Add audio confirmation indicator
+                        audio_indicator = " 🔊" if audio_siren_detected else ""
+                        cv2.putText(frame, f"{emoji} {vehicle_class.upper()}{audio_indicator} {conf:.2f}",
+                                    (int(x1), int(y1) - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2)
+                        
+                        # Draw flashing effect with pulsing animation
+                        center_x, center_y = int((x1+x2)/2), int((y1+y2)/2)
+                        pulse_radius = int(25 + 10 * np.sin(time.time() * 8))  # Pulsing effect
+                        cv2.circle(frame, (center_x, center_y), pulse_radius, color, 3)
+                        
+                        # Add siren light indicators
+                        red_siren, blue_siren = detect_siren_lights(frame, x1, y1, x2, y2)
+                        if red_siren:
+                            cv2.circle(frame, (int(x1) + 10, int(y1) + 10), 8, (0, 0, 255), -1)
+                        if blue_siren:
+                            cv2.circle(frame, (int(x2) - 10, int(y1) + 10), 8, (255, 0, 0), -1)
+                        
+                        # Add AMBULANCE text indicator
+                        roi = frame[int(y1):int(y2), int(x1):int(x2)]
+                        has_ambulance_text = detect_ambulance_text(roi)
+                        if has_ambulance_text:
+                            cv2.putText(frame, "AMBULANCE TEXT", (int(x1), int(y2) + 20),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                        
+                        # Draw the top region being analyzed for siren lights
+                        top_region_height = int((y2 - y1) * 0.25)  # Top 25% of vehicle
+                        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y1 + top_region_height)), (255, 255, 0), 2)
+                        cv2.putText(frame, "SIREN ZONE (25%)", (int(x1), int(y1 + top_region_height + 15)),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+                        
+                        # Add audio siren indicator
+                        if audio_siren_detected:
+                            cv2.circle(frame, (center_x, int(y2) - 10), 6, (255, 255, 0), -1)  # Yellow dot for audio
+                        
                     else:
                         # Regular vehicle
                         color = (0, 255, 0)  # Green for vehicles
@@ -328,12 +601,25 @@ def run_detection(video_source):
             cv2.putText(frame, f"{lane}: {status}", (x, lane_y), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-        # Enhanced status text
+        # Enhanced status text with detailed emergency info
         status_text = f"Vehicles: {vehicle_count} | Pedestrians: {pedestrian_count} | Emergencies: {emergency_count}"
+        
+        # Add detailed emergency vehicle breakdown
+        if emergency_count > 0:
+            emergency_details = []
+            for vehicle_type, count in emergency_vehicle_types.items():
+                if count > 0:
+                    emoji_map = {"ambulance": "🚑", "fire_truck": "🚒", "police": "🚔", "emergency": "🚨"}
+                    emergency_details.append(f"{emoji_map[vehicle_type]} {count}")
+            if emergency_details:
+                status_text += f" | {' '.join(emergency_details)}"
+        
         if hotspot_zone:
             status_text += f" | 🚩 {hotspot_zone} (AQI {aqi_level})"
         if emergency_detected:
             status_text += " | 🚨 EMERGENCY DETECTED"
+        if audio_siren_detected:
+            status_text += " | 🔊 SIREN AUDIO DETECTED"
 
         cv2.putText(frame, status_text, (20, 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
@@ -614,11 +900,20 @@ with col2:
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Emergency metric
+                # Emergency metric with detailed breakdown
+                emergency_details_html = ""
+                if emergency_count > 0:
+                    for vehicle_type, count in emergency_vehicle_types.items():
+                        if count > 0:
+                            emoji_map = {"ambulance": "🚑", "fire_truck": "🚒", "police": "🚔", "emergency": "🚨"}
+                            emergency_details_html += f"<div style='font-size: 0.8rem; color: #666; margin: 0.2rem 0;'>{emoji_map[vehicle_type]} {vehicle_type.replace('_', ' ').title()}: {count}</div>"
+                
                 emergency_metric.markdown(f"""
                 <div class="metric-card">
                     <div class="metric-value">🚨 {emergency_count}</div>
                     <div class="metric-label">Emergency Vehicles</div>
+                    {emergency_details_html}
+                    {f"<div style='font-size: 0.8rem; color: #ff6b6b; margin: 0.2rem 0;'>🔊 Audio Siren Detected</div>" if audio_siren_detected else ""}
                 </div>
                 """, unsafe_allow_html=True)
                 
@@ -669,10 +964,21 @@ if running:
     with frame_lock:
         if latest_frame is not None:
             if emergency_detected:
-                emergency_alert.markdown("""
+                # Create detailed emergency alert
+                emergency_breakdown = []
+                for vehicle_type, count in emergency_vehicle_types.items():
+                    if count > 0:
+                        emoji_map = {"ambulance": "🚑", "fire_truck": "🚒", "police": "🚔", "emergency": "🚨"}
+                        emergency_breakdown.append(f"{emoji_map[vehicle_type]} {count} {vehicle_type.replace('_', ' ').title()}")
+                
+                emergency_breakdown_text = " | ".join(emergency_breakdown)
+                audio_indicator = " + 🔊 AUDIO SIREN" if audio_siren_detected else ""
+                
+                emergency_alert.markdown(f"""
                 <div class="emergency-alert">
                     <h4 style="margin: 0; font-size: 1.5rem;">🚨 EMERGENCY VEHICLE DETECTED!</h4>
-                    <p style="margin: 0.5rem 0 0 0; font-size: 1.1rem;">All lanes cleared for emergency passage</p>
+                    <p style="margin: 0.5rem 0 0 0; font-size: 1.1rem;">{emergency_breakdown_text}{audio_indicator}</p>
+                    <p style="margin: 0.5rem 0 0 0; font-size: 1rem;">All lanes cleared for emergency passage</p>
                 </div>
                 """, unsafe_allow_html=True)
                 st.info(suggest_emergency_route("hospital"))
@@ -811,3 +1117,4 @@ while True:
                 frame_display.image(latest_frame, channels="RGB")
 
     time.sleep(0.05)
+
