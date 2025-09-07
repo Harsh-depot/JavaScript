@@ -32,102 +32,76 @@ TrafficOps+ is an advanced traffic management system that goes beyond simple veh
 - **Safety Metrics**: Tracks pedestrian-vehicle interactions
 
 ### 🌍 Environmental Impact
-- **Pollution Monitoring**: Real-time AQI calculation based on traffic density
-- **Hotspot Detection**: Identifies high-pollution areas near hospitals and schools
-- **Emission Tracking**: Monitors vehicle idling and congestion patterns
+- **Pollution Monitoring**: Real-time AQI calculation and display, now with detailed metrics for CO, NO₂, SO₂, PM2.5, and PM10.
+- **Hotspot Detection**: Identifies high-pollution areas near hospitals and schools.
+- **Emission Tracking**: Monitors vehicle idling and congestion patterns.
+- **Live Pollution Data Simulation**: Uses `pollutyion.py` to simulate sensor readings for development and testing.
 
-### 🚦 Smart Traffic Management
-- **Virtual Traffic Lights**: Real-time signal control with visual indicators
-- **Dynamic Lane Allocation**: Emergency, bus, and normal lane management
-- **Congestion Analysis**: Multi-level traffic density assessment
-- **Flow Optimization**: Intelligent traffic routing and control
+---
 
-### 📊 Advanced Analytics
-- **Real-time Metrics**: Live vehicle, pedestrian, and emergency counts
-- **Interactive Charts**: Traffic flow and AQI visualizations
-- **Performance Tracking**: System efficiency and response time metrics
-- **Historical Data**: Traffic pattern analysis and reporting
+## 🆕 Recent Updates
 
-## 🚀 Quick Start
+- **Integrated live pollution metrics** (AQI, CO, NO₂, SO₂, PM2.5, PM10) into the dashboard.
+- **Pollution metrics are always visible** in the Air Quality Monitor section, regardless of detection state.
+- **Added `pollutyion.py`**: Simulates pollution sensor data for AQI and gas concentrations.
+- **Enhanced dashboard UI**: Displays detailed air quality metrics with improved visuals.
+- **Modular integration**: Pollution data can be used independently or with traffic detection.
 
-### Prerequisites
-- Python 3.8 or higher
-- Webcam or video file for testing
-- (Optional) Google Maps API key for enhanced features
-- (Optional) OpenWeather API key for real AQI data
+---
 
-### Installation
+## 🧪 Pollution Data Simulation
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/yourusername/TrafficOpsPlus.git
-   cd TrafficOpsPlus
-   ```
+The `pollutyion.py` module provides simulated pollution sensor data for development and testing.
 
-2. **Install dependencies**
+**Usage:**
+```python
+from pollutyion import get_pollution_data
+
+data = get_pollution_data()
+print(data)  # {'AQI': ..., 'CO (ppm)': ..., ...}
+```
+
+**Standalone Simulation:**
+```bash
+python pollutyion.py
+```
+This will print random pollution metrics every 2 seconds.
+
+---
+
+## 🚀 Quick Start (Updated)
+
+1. **Install dependencies**
    ```bash
    pip install -r requirements.txt
    ```
 
-3. **Configure API keys** (Optional)
+2. **Run the dashboard**
    ```bash
-   # Create .streamlit/secrets.toml
-   GOOGLE_MAPS_API_KEY = "your_google_maps_api_key"
-   OPENWEATHER_API_KEY = "your_openweather_api_key"
+   streamlit run trf2.py
    ```
 
-4. **Run the application**
+3. **(Optional) Run pollution sensor simulation**
    ```bash
-   streamlit run dashboard_optimized.py
+   python pollutyion.py
    ```
 
-5. **Open your browser**
-   - Navigate to `http://localhost:8501`
-   - Select your video source (Camera, Local File, or YouTube)
-   - Click "Start" to begin detection
+---
 
-## 🎮 Usage
+## 📁 File Structure (Updated)
 
-### Video Sources
-- **📹 Camera**: Real-time detection using your webcam
-- **📁 Local File**: Upload and process video files
-- **🌐 YouTube**: Stream and analyze YouTube videos
+- `trf2.py` — Main dashboard and traffic detection logic (now includes live pollution metrics)
+- `pollutyion.py` — Pollution sensor simulator and data provider
 
-### Detection Modes
-- **🚗 Vehicle Detection**: Cars, buses, trucks, motorcycles, bicycles
-- **🚶 Pedestrian Detection**: People and pedestrian flow analysis
-- **🚨 Emergency Detection**: Ambulances, fire trucks, police vehicles
-- **🌍 Environmental**: Air quality and pollution monitoring
+---
 
-### Dashboard Features
-- **Live Video Feed**: Real-time object detection with bounding boxes
-- **Traffic Light Control**: Virtual traffic signal with animations
-- **Metrics Display**: Live statistics and performance indicators
-- **Emergency Alerts**: Visual and audio notifications
-- **Analytics Charts**: Traffic flow and environmental data
+## 📝 How It Works (Environmental Monitoring)
 
-## 🛠️ Technical Architecture
+- The dashboard fetches pollution metrics using `get_pollution_data()` from `pollutyion.py`.
+- Metrics for AQI, CO, NO₂, SO₂, PM2.5, and PM10 are displayed in the Air Quality Monitor section.
+- Pollution metrics update independently from traffic detection and are always visible.
 
-### Core Technologies
-- **Computer Vision**: YOLOv8 for object detection and classification
-- **Web Framework**: Streamlit for responsive dashboard interface
-- **Video Processing**: OpenCV for real-time video analysis
-- **Data Visualization**: Plotly for interactive charts and graphs
-- **Mapping**: Folium for geographic visualization
-
-### Detection Pipeline
-1. **Video Input**: Camera, file, or YouTube stream
-2. **YOLOv8 Processing**: Real-time object detection
-3. **Emergency Analysis**: Color, shape, and text recognition
-4. **Traffic Management**: Lane allocation and signal control
-5. **Environmental Monitoring**: AQI calculation and hotspot detection
-6. **Dashboard Update**: Real-time metrics and visualizations
-
-### Performance Metrics
-- **Detection Speed**: 30+ FPS on modern hardware
-- **Accuracy**: 95%+ for vehicle detection, 90%+ for pedestrian detection
-- **Latency**: <100ms for emergency vehicle detection
-- **Scalability**: Supports multiple camera feeds simultaneously
+---
 
 ## 📊 System Requirements
 
@@ -258,4 +232,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 **Built with ❤️ for safer, greener cities**
 
-*TrafficOps+ - Transforming urban mobility through intelligent traffic management*
+*TrafficOps+ - Transforming urban mobility through intelligent traffic and environmental management*
