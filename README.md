@@ -185,7 +185,7 @@ EMERGENCY_ZONES = {
 
 ## 🤝 Contributing
 
-We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details.
+We welcome contributions! 
 
 ### Development Setup
 1. Fork the repository
@@ -214,19 +214,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **OpenWeather API** for environmental data
 - **Plotly** for interactive visualizations
 
-## 📞 Support
-
-- **Documentation**: [Wiki](https://github.com/yourusername/TrafficOpsPlus/wiki)
-- **Issues**: [GitHub Issues](https://github.com/yourusername/TrafficOpsPlus/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/TrafficOpsPlus/discussions)
-- **Email**: support@trafficopsplus.com
-
-## 🏆 Awards and Recognition
-
-- **🥇 Winner**: Smart City Hackathon 2024
-- **🏆 Best Innovation**: Urban Tech Conference 2024
-- **⭐ Featured**: GitHub Trending Projects
-- **📰 Press**: Featured in TechCrunch, Wired, and The Verge
 
 ---
 
