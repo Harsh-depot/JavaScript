@@ -8,6 +8,8 @@ import yt_dlp
 import requests
 import json
 import folium
+import streamlit as st
+import folium
 from streamlit_folium import st_folium
 import plotly.express as px
 import plotly.graph_objects as go
@@ -31,6 +33,11 @@ except ImportError:
         return None
 
 import re
+from pollutyion import get_pollution_data
+
+def get_weather_data():
+    # Use simulated pollution data instead of API
+    return get_pollution_data()
 
 # ---------------------
 # CONFIG
@@ -928,33 +935,41 @@ with col2:
     # Pollution metrics with stunning design
     st.markdown("### 🌍 Air Quality Monitor")
     pollution_metric = st.empty()
-    
-    if running:
-        with frame_lock:
-            if latest_frame is not None:
-                if hotspot_zone:
-                    aqi_color = "red" if aqi_level > 150 else "orange" if aqi_level > 100 else "green"
-                    pollution_metric.markdown(f"""
-                    <div class="metric-card" style="border-left-color: {aqi_color};">
-                        <div class="metric-value" style="color: {aqi_color};">🌍 {aqi_level}</div>
-                        <div class="metric-label">{hotspot_zone}</div>
-                        <div style="margin-top: 1rem;">
-                            <div style="background: #e9ecef; border-radius: 10px; height: 20px; overflow: hidden;">
-                                <div style="background: linear-gradient(90deg, #2ed573, #ffa502, #ff4757); 
-                                            height: 100%; width: {min(aqi_level/300*100, 100)}%; 
-                                            border-radius: 10px; transition: width 0.5s ease;"></div>
-                            </div>
-                            <small style="color: #6c757d;">AQI Level: {aqi_level}</small>
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                else:
-                    pollution_metric.markdown("""
-                    <div class="metric-card" style="border-left-color: #2ed573;">
-                        <div class="metric-value" style="color: #2ed573;">✅ Good</div>
-                        <div class="metric-label">Air Quality Status</div>
-                    </div>
-                    """, unsafe_allow_html=True)
+    pollution_details = st.empty()
+
+    # Always show pollution metrics, regardless of running state
+    pollution_data = get_pollution_data()
+    aqi_value = pollution_data["AQI"]
+    aqi_color = "red" if aqi_value > 150 else "orange" if aqi_value > 100 else "green"
+    hotspot_label = hotspot_zone if hotspot_zone else "General Zone"
+
+    pollution_metric.markdown(f"""
+    <div class="metric-card" style="border-left-color: {aqi_color};">
+        <div class="metric-value" style="color: {aqi_color};">🌍 {aqi_value}</div>
+        <div class="metric-label">{hotspot_label}</div>
+        <div style="margin-top: 1rem;">
+            <div style="background: #e9ecef; border-radius: 10px; height: 20px; overflow: hidden;">
+                <div style="background: linear-gradient(90deg, #2ed573, #ffa502, #ff4757); 
+                            height: 100%; width: {min(aqi_value/300*100, 100)}%; 
+                            border-radius: 10px; transition: width 0.5s ease;"></div>
+            </div>
+            <small style="color: #6c757d;">AQI Level: {aqi_value}</small>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    pollution_details.markdown(f"""
+    <div class="metric-card" style="border-left-color: #764ba2;">
+        <div class="metric-label">Detailed Pollution Metrics</div>
+        <ul style="list-style:none; padding-left:0; font-size:1.1rem;">
+            <li>CO (ppm): <strong>{pollution_data['CO (ppm)']}</strong></li>
+            <li>NO₂ (ppm): <strong>{pollution_data['NO2 (ppm)']}</strong></li>
+            <li>SO₂ (ppm): <strong>{pollution_data['SO2 (ppm)']}</strong></li>
+            <li>PM2.5 (µg/m³): <strong>{pollution_data['PM2.5 (µg/m³)']}</strong></li>
+            <li>PM10 (µg/m³): <strong>{pollution_data['PM10 (µg/m³)']}</strong></li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
 
 # Emergency alerts with stunning design
 emergency_alert = st.empty()
@@ -969,7 +984,7 @@ if running:
                 for vehicle_type, count in emergency_vehicle_types.items():
                     if count > 0:
                         emoji_map = {"ambulance": "🚑", "fire_truck": "🚒", "police": "🚔", "emergency": "🚨"}
-                        emergency_breakdown.append(f"{emoji_map[vehicle_type]} {count} {vehicle_type.replace('_', ' ').title()}")
+                        emergency_breakdown.append(f"{emoji_map[vehicle_type]} {count}")
                 
                 emergency_breakdown_text = " | ".join(emergency_breakdown)
                 audio_indicator = " + 🔊 AUDIO SIREN" if audio_siren_detected else ""
@@ -1117,4 +1132,3 @@ while True:
                 frame_display.image(latest_frame, channels="RGB")
 
     time.sleep(0.05)
-
