@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Dynamic Hospital Finder</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+  <style>
+    #map { height: 100vh; width: 100%; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+  <script>
+    // Initialize map (center on Delhi as default)
+    const map = L.map('map').setView([28.6139, 77.2090], 13);
+
+    // Add OpenStreetMap tiles
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "© OpenStreetMap contributors"
+    }).addTo(map);
+
+    let hospitalMarkers = [];
+
+    // Function to fetch hospitals from Overpass API
+    async function fetchHospitals(lat, lng) {
+      // Overpass query: find hospitals within 3km of clicked point
+      const query = `
+        [out:json];
+        (
+          node["amenity"="hospital"](around:3000,${lat},${lng});
+          way["amenity"="hospital"](around:3000,${lat},${lng});
+          relation["amenity"="hospital"](around:3000,${lat},${lng});
+        );
+        out center;
+      `;
+
+      const url = "https://overpass-api.de/api/interpreter?data=" + encodeURIComponent(query);
+
+      const response = await fetch(url);
+      const data = await response.json();
+
+      // Clear old markers
+      hospitalMarkers.forEach(m => map.removeLayer(m));
+      hospitalMarkers = [];
+
+      if (data.elements && data.elements.length > 0) {
+        // Sort by distance and take top 3
+        data.elements.sort((a, b) => {
+          const da = Math.hypot(a.lat - lat, a.lon - lng);
+          const db = Math.hypot(b.lat - lat, b.lon - lng);
+          return da - db;
+        });
+
+        const nearest3 = data.elements.slice(0, 3);
+
+        nearest3.forEach(h => {
+          const hLat = h.lat || h.center.lat;
+          const hLng = h.lon || h.center.lon;
+          const name = h.tags && h.tags.name ? h.tags.name : "Unknown Hospital";
+
+          const marker = L.marker([hLat, hLng])
+            .addTo(map)
+            .bindPopup("🏥 " + name);
+          hospitalMarkers.push(marker);
+        });
+      } else {
+        alert("No hospitals found nearby!");
+      }
+    }
+
+    // 📍 On map click, fetch nearest hospitals
+    map.on("click", function(e) {
+      const { lat, lng } = e.latlng;
+      fetchHospitals(lat, lng);
+    });
+  </script>
+</body>
+</html>
