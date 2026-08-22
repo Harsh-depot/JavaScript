@@ -38,4 +38,3 @@ const myn2 = myArr.splice(1,3); // Removes 3 elements from index 1 and returns t
 
 // console.log(myn2);
 // console.log("C", myArr);
-
